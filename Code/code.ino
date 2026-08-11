@@ -2,7 +2,7 @@
  * Handheld Laser Distance Meter
  * Arduino Nano ESP32 + VL53L1X + SSD1306 OLED + KY-008 Laser
  *
- * Matches wiring from build guide:
+ * Wiring (from build guide):
  *   VL53L1X   VCC->3.3V  GND->GND  SDA->GPIO21  SCL->GPIO22
  *   OLED      VCC->3.3V  GND->GND  SDA->GPIO21  SCL->GPIO22
  *   Button    one leg->GPIO4  other leg->GND (internal pull-up)
@@ -10,10 +10,12 @@
  *   Power     Battery -> TP4056 -> Arduino VIN
  *
  * Behavior:
- *   - Idle screen shown on OLED, waiting for button press
- *   - On button press: laser turns ON, sensor takes a measurement,
- *     distance is shown on OLED, laser turns back OFF
- *   - Debounced single-shot measurement (no continuous mode)
+ *   - HOLD button: device "powers on" (laser + display + sensor active)
+ *     and measures continuously the whole time it's held.
+ *   - RELEASE button: measuring stops and device "powers off"
+ *     (laser off, screen blanked).
+ *   - Display: distance in METERS shown large, CENTIMETERS shown
+ *     smaller directly below it.
  */
 
 #include <Wire.h>
@@ -37,18 +39,19 @@
 #define VL53L1X_ADDRESS 0x29
 
 // ==================== DEBOUNCE ====================
-#define DEBOUNCE_DELAY 50    // ms
+#define DEBOUNCE_DELAY 30    // ms
 
 // ==================== OBJECTS ====================
 Adafruit_VL53L1X sensor = Adafruit_VL53L1X();
 Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
 
 // ==================== STATE ====================
-bool lastButtonState = HIGH;   // not pressed (pull-up)
+bool rawButtonState   = HIGH;  // instantaneous read
+bool debouncedState    = HIGH;  // debounced (stable) state
+bool lastDebouncedState = HIGH;
 unsigned long lastDebounceTime = 0;
 
-int16_t lastDistanceMM = -1;   // -1 = no reading yet
-bool sensorOK = false;
+bool devicePoweredOn = false;   // true while button is held & device active
 
 // ==================== SETUP ====================
 void setup() {
@@ -67,151 +70,165 @@ void setup() {
 
   // OLED
   if (!display.begin(SSD1306_SWITCHCAPVCC, OLED_ADDRESS)) {
-    Serial.println("ERROR: OLED not found at 0x3C, trying 0x3D...");
+    Serial.println("OLED not found at 0x3C, trying 0x3D...");
     if (!display.begin(SSD1306_SWITCHCAPVCC, 0x3D)) {
       Serial.println("ERROR: OLED not found. Halting.");
       while (1) delay(10);
     }
   }
-  display.clearDisplay();
-  display.setTextSize(1);
-  display.setTextColor(SSD1306_WHITE);
-  display.setCursor(0, 0);
-  display.println("Distance Meter");
-  display.println("Initializing...");
-  display.display();
   Serial.println("OLED OK");
 
   // VL53L1X
   if (!sensor.begin(VL53L1X_ADDRESS, &Wire)) {
     Serial.print("ERROR: VL53L1X not found: ");
     Serial.println(sensor.vl_status);
-    display.clearDisplay();
-    display.setCursor(0, 0);
-    display.println("Sensor error!");
-    display.println("Check wiring.");
-    display.display();
+    displayMessage("Sensor error!", "Check wiring.");
     while (1) delay(10);
   }
   Serial.println("VL53L1X OK");
-
-  if (!sensor.startRanging()) {
-    Serial.print("ERROR: couldn't start ranging: ");
-    Serial.println(sensor.vl_status);
-    while (1) delay(10);
-  }
   sensor.setTimingBudget(50);  // ms, balance of speed vs accuracy
-  sensorOK = true;
 
-  Serial.println("Setup complete. Press button to measure.");
-  showIdleScreen();
+  Serial.println("Setup complete. Hold button to measure.");
+  goToSleepScreen();
 }
 
 // ==================== MAIN LOOP ====================
 void loop() {
+  updateButtonState();
+
+  // Just pressed -> power on
+  if (debouncedState == LOW && lastDebouncedState == HIGH) {
+    powerOn();
+  }
+
+  // Just released -> power off
+  if (debouncedState == HIGH && lastDebouncedState == LOW) {
+    powerOff();
+  }
+
+  // While held, keep measuring and updating the display
+  if (devicePoweredOn) {
+    runMeasurementCycle();
+  }
+
+  lastDebouncedState = debouncedState;
+}
+
+// ==================== BUTTON DEBOUNCE ====================
+void updateButtonState() {
   bool reading = digitalRead(BUTTON_PIN);
 
-  // Detect a debounced press (HIGH -> LOW transition)
-  if (reading != lastButtonState) {
+  if (reading != rawButtonState) {
     lastDebounceTime = millis();
   }
 
   if ((millis() - lastDebounceTime) > DEBOUNCE_DELAY) {
-    if (reading == LOW && lastButtonState == HIGH) {
-      // Confirmed new press
-      takeMeasurement();
-    }
+    debouncedState = reading;
   }
 
-  lastButtonState = reading;
-  delay(10);
+  rawButtonState = reading;
+}
+
+// ==================== POWER CONTROL ====================
+void powerOn() {
+  Serial.println("Button held - powering ON, starting measurement");
+  devicePoweredOn = true;
+
+  digitalWrite(LASER_PIN, HIGH);   // laser on
+
+  if (!sensor.startRanging()) {
+    Serial.print("ERROR: couldn't start ranging: ");
+    Serial.println(sensor.vl_status);
+  }
+
+  displayMessage("Measuring...", "");
+}
+
+void powerOff() {
+  Serial.println("Button released - stopping measurement, powering OFF");
+  devicePoweredOn = false;
+
+  digitalWrite(LASER_PIN, LOW);    // laser off
+  sensor.stopRanging();
+
+  goToSleepScreen();
 }
 
 // ==================== MEASUREMENT ====================
-void takeMeasurement() {
-  Serial.println("Button pressed - measuring...");
-
-  // Laser on during measurement
-  digitalWrite(LASER_PIN, HIGH);
-
-  display.clearDisplay();
-  display.setTextSize(1);
-  display.setCursor(0, 0);
-  display.println("Measuring...");
-  display.display();
-
-  // Wait for a fresh sample
-  int16_t distance = -1;
-  unsigned long startWait = millis();
-  while (!sensor.dataReady()) {
-    if (millis() - startWait > 500) break;  // timeout safeguard
-    delay(5);
-  }
-
+void runMeasurementCycle() {
   if (sensor.dataReady()) {
-    distance = sensor.distance();
-    sensor.clearInterrupt();
-  }
+    int16_t distanceMM = sensor.distance();
+    sensor.clearInterrupt();       // triggers next measurement
 
-  // Laser off after measurement
-  digitalWrite(LASER_PIN, LOW);
-
-  if (distance < 0) {
-    Serial.println("Measurement failed / out of range");
-    showResult(-1);
-  } else {
-    lastDistanceMM = distance;
-    Serial.print("Distance: ");
-    Serial.print(distance);
-    Serial.println(" mm");
-    showResult(distance);
+    if (distanceMM < 0) {
+      Serial.println("No valid target");
+      showOutOfRange();
+    } else {
+      Serial.print("Distance: ");
+      Serial.print(distanceMM);
+      Serial.println(" mm");
+      showDistance(distanceMM);
+    }
   }
 }
 
 // ==================== DISPLAY ====================
-void showIdleScreen() {
+
+// Big meters reading with smaller centimeters below it
+void showDistance(int16_t distanceMM) {
+  float meters = distanceMM / 1000.0;
+  float centimeters = distanceMM / 10.0;
+
   display.clearDisplay();
+  display.setTextColor(SSD1306_WHITE);
+
+  // ---- Meters: large text ----
+  display.setTextSize(3);
+  char meterStr[8];
+  snprintf(meterStr, sizeof(meterStr), "%.2fm", meters);
+  int16_t x1, y1;
+  uint16_t w, h;
+  display.getTextBounds(meterStr, 0, 0, &x1, &y1, &w, &h);
+  display.setCursor((SCREEN_WIDTH - w) / 2, 8);
+  display.print(meterStr);
+
+  // ---- Centimeters: smaller text, below ----
+  display.setTextSize(2);
+  char cmStr[10];
+  snprintf(cmStr, sizeof(cmStr), "%.1fcm", centimeters);
+  display.getTextBounds(cmStr, 0, 0, &x1, &y1, &w, &h);
+  display.setCursor((SCREEN_WIDTH - w) / 2, 40);
+  display.print(cmStr);
+
+  display.display();
+}
+
+void showOutOfRange() {
+  display.clearDisplay();
+  display.setTextColor(SSD1306_WHITE);
+  display.setTextSize(2);
+  display.setCursor(10, 20);
+  display.println("-- . -- m");
+  display.setTextSize(1);
+  display.setCursor(10, 45);
+  display.println("Out of range / no target");
+  display.display();
+}
+
+void displayMessage(const char* line1, const char* line2) {
+  display.clearDisplay();
+  display.setTextColor(SSD1306_WHITE);
   display.setTextSize(1);
   display.setCursor(0, 0);
-  display.println("Distance Meter");
-  display.println("--------------------");
-  display.println("");
-  display.println("Press button to");
-  display.println("take a measurement");
-
-  if (lastDistanceMM >= 0) {
-    display.println("");
-    display.print("Last: ");
-    display.print(lastDistanceMM / 10.0, 1);
-    display.println(" cm");
+  display.println(line1);
+  if (strlen(line2) > 0) {
+    display.println(line2);
   }
   display.display();
 }
 
-void showResult(int16_t distanceMM) {
+// Blank screen while device is "off" (button not held)
+void goToSleepScreen() {
   display.clearDisplay();
-  display.setTextSize(1);
-  display.setCursor(0, 0);
-  display.println("Distance Meter");
-  display.println("--------------------");
-
-  if (distanceMM < 0) {
-    display.setCursor(0, 25);
-    display.println("Out of range");
-    display.println("or no target");
-  } else {
-    display.setTextSize(2);
-    display.setCursor(0, 20);
-    display.print(distanceMM / 10.0, 1);
-    display.println(" cm");
-
-    display.setTextSize(1);
-    display.setCursor(0, 45);
-    display.print(distanceMM / 1000.0, 2);
-    display.println(" m");
-  }
-
-  display.setCursor(0, 56);
-  display.println("Press to re-measure");
   display.display();
 }
