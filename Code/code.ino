@@ -1,21 +1,26 @@
 /*
  * Handheld Laser Distance Meter
- * Arduino Nano ESP32 + VL53L1X + SSD1306 OLED + KY-008 Laser
+ * ESP32-C3 Super Mini + VL53L1X + SSD1306 OLED + KY-008 Laser
  *
- * Wiring (from build guide):
- *   VL53L1X   VCC->3.3V  GND->GND  SDA->GPIO21  SCL->GPIO22
- *   OLED      VCC->3.3V  GND->GND  SDA->GPIO21  SCL->GPIO22
- *   Button    one leg->GPIO4  other leg->GND (internal pull-up)
+ * UPDATED FOR ESP32-C3 SUPER MINI - Key Changes:
+ *   • I2C pins: GPIO21 (SDA), GPIO20 (SCL) - NOT GPIO21/22!
+ *   • More compact board than Nano ESP32
+ *   • USB-C instead of micro USB
+ *   • Still 3.3V logic, 5V input capable
+ *
+ * Wiring:
+ *   VL53L1X   VCC->3.3V  GND->GND  SDA->GPIO21  SCL->GPIO20
+ *   OLED      VCC->3.3V  GND->GND  SDA->GPIO21  SCL->GPIO20
+ *   Button    one leg->GPIO4  other leg->GND
  *   KY-008    VCC->5V    GND->GND  Signal->GPIO15
- *   Power     Battery -> TP4056 -> Arduino VIN
+ *   Power     Battery -> TP4056 -> ESP32-C3 5V
  *
  * Behavior:
- *   - HOLD button: device "powers on" (laser + display + sensor active)
- *     and measures continuously the whole time it's held.
- *   - RELEASE button: measuring stops and device "powers off"
- *     (laser off, screen blanked).
- *   - Display: distance in METERS shown large, CENTIMETERS shown
- *     smaller directly below it.
+ *   - HOLD button: device powers on (laser + display + sensor active)
+ *     and measures continuously
+ *   - RELEASE button: measuring stops and device powers off
+ *     (laser off, screen blank)
+ *   - Display: distance in METERS shown large, CENTIMETERS smaller below
  */
 
 #include <Wire.h>
@@ -23,11 +28,11 @@
 #include <Adafruit_SSD1306.h>
 #include <Adafruit_GFX.h>
 
-// ==================== PIN DEFINITIONS ====================
-#define SDA_PIN      21
-#define SCL_PIN      22
-#define BUTTON_PIN   4
-#define LASER_PIN    15
+// ==================== PIN DEFINITIONS (ESP32-C3) ====================
+#define SDA_PIN      21  // GPIO21 (SDA) on ESP32-C3 Super Mini
+#define SCL_PIN      20  // GPIO20 (SCL) on ESP32-C3 Super Mini - DIFFERENT FROM NANO ESP32!
+#define BUTTON_PIN   4   // GPIO4 for button input
+#define LASER_PIN    15  // GPIO15 for laser control
 
 // ==================== DISPLAY CONFIG ====================
 #define SCREEN_WIDTH  128
@@ -57,38 +62,77 @@ bool devicePoweredOn = false;   // true while button is held & device active
 void setup() {
   Serial.begin(115200);
   delay(500);
-  Serial.println("\n=== Handheld Laser Distance Meter ===");
+  Serial.println("\n\n╔════════════════════════════════════════════════════════╗");
+  Serial.println("║  Handheld Laser Distance Meter - ESP32-C3 Super Mini  ║");
+  Serial.println("╚════════════════════════════════════════════════════════╝\n");
 
   // Pins
   pinMode(BUTTON_PIN, INPUT_PULLUP);
   pinMode(LASER_PIN, OUTPUT);
   digitalWrite(LASER_PIN, LOW);   // laser off by default
 
-  // I2C
-  Wire.begin(SDA_PIN, SCL_PIN);
-  delay(100);
+  Serial.println("✓ GPIO pins initialized");
 
-  // OLED
+  // I2C with CORRECTED PINS for ESP32-C3
+  Wire.begin(SDA_PIN, SCL_PIN);  // SDA=GPIO21, SCL=GPIO20
+  Wire.setClock(400000);
+  delay(100);
+  Serial.print("✓ I2C bus initialized (SDA=GPIO");
+  Serial.print(SDA_PIN);
+  Serial.print(", SCL=GPIO");
+  Serial.print(SCL_PIN);
+  Serial.println(")");
+
+  // OLED Display
   if (!display.begin(SSD1306_SWITCHCAPVCC, OLED_ADDRESS)) {
     Serial.println("OLED not found at 0x3C, trying 0x3D...");
     if (!display.begin(SSD1306_SWITCHCAPVCC, 0x3D)) {
-      Serial.println("ERROR: OLED not found. Halting.");
-      while (1) delay(10);
+      Serial.println("✗ ERROR: OLED display not found at any address");
+      Serial.println("  Addresses tried: 0x3C, 0x3D");
+      displayMessage("OLED Error", "Check I2C wiring");
+      while(1) delay(10);
     }
+    Serial.println("✓ OLED found at 0x3D");
+  } else {
+    Serial.println("✓ OLED found at 0x3C");
   }
-  Serial.println("OLED OK");
 
-  // VL53L1X
+  display.clearDisplay();
+  display.setTextSize(1);
+  display.setTextColor(SSD1306_WHITE);
+  display.setCursor(0, 0);
+  display.println("Distance Meter");
+  display.println("Initializing...");
+  display.display();
+
+  // VL53L1X Distance Sensor
   if (!sensor.begin(VL53L1X_ADDRESS, &Wire)) {
-    Serial.print("ERROR: VL53L1X not found: ");
+    Serial.print("✗ ERROR: VL53L1X not found at address 0x");
+    Serial.println(VL53L1X_ADDRESS, HEX);
+    Serial.println("  Status: ");
     Serial.println(sensor.vl_status);
-    displayMessage("Sensor error!", "Check wiring.");
-    while (1) delay(10);
+    displayMessage("Sensor Error", "Check I2C wiring");
+    while(1) delay(10);
   }
-  Serial.println("VL53L1X OK");
-  sensor.setTimingBudget(50);  // ms, balance of speed vs accuracy
+  Serial.println("✓ VL53L1X sensor initialized (address: 0x29)");
 
-  Serial.println("Setup complete. Hold button to measure.");
+  if (!sensor.startRanging()) {
+    Serial.print("✗ ERROR: couldn't start ranging. Status: ");
+    Serial.println(sensor.vl_status);
+    displayMessage("Sensor Error", "Ranging failed");
+    while(1) delay(10);
+  }
+
+  // Timing budget: 50ms balances speed vs accuracy
+  sensor.setTimingBudget(50);
+  Serial.println("✓ VL53L1X timing budget set to 50ms");
+
+  Serial.println("\n╔════════════════════════════════════════════════════════╗");
+  Serial.println("║  Setup Complete - Ready to Measure                   ║");
+  Serial.println("║  Hold button to start measuring                      ║");
+  Serial.println("║  Release button to stop                              ║");
+  Serial.println("╚════════════════════════════════════════════════════════╝\n");
+
   goToSleepScreen();
 }
 
@@ -96,12 +140,12 @@ void setup() {
 void loop() {
   updateButtonState();
 
-  // Just pressed -> power on
+  // Just pressed (LOW) -> power on
   if (debouncedState == LOW && lastDebouncedState == HIGH) {
     powerOn();
   }
 
-  // Just released -> power off
+  // Just released (HIGH) -> power off
   if (debouncedState == HIGH && lastDebouncedState == LOW) {
     powerOff();
   }
@@ -112,6 +156,7 @@ void loop() {
   }
 
   lastDebouncedState = debouncedState;
+  delay(5);  // Small delay to prevent watchdog issues
 }
 
 // ==================== BUTTON DEBOUNCE ====================
@@ -131,45 +176,63 @@ void updateButtonState() {
 
 // ==================== POWER CONTROL ====================
 void powerOn() {
-  Serial.println("Button held - powering ON, starting measurement");
+  Serial.println("\n→ Button held - POWERING ON");
+  Serial.println("  • Laser ON");
+  Serial.println("  • Sensor ranging started");
+  Serial.println("  • Display active");
+
   devicePoweredOn = true;
 
-  digitalWrite(LASER_PIN, HIGH);   // laser on
+  // Laser on
+  digitalWrite(LASER_PIN, HIGH);
+  Serial.println("  ✓ Laser: ON (GPIO15 = HIGH)");
 
+  // Start sensor
   if (!sensor.startRanging()) {
-    Serial.print("ERROR: couldn't start ranging: ");
+    Serial.print("  ✗ WARNING: couldn't start ranging: ");
     Serial.println(sensor.vl_status);
   }
 
-  displayMessage("Measuring...", "");
+  displayMessage("Measuring...", "Hold button");
 }
 
 void powerOff() {
-  Serial.println("Button released - stopping measurement, powering OFF");
+  Serial.println("\n→ Button released - POWERING OFF");
+  Serial.println("  • Sensor ranging stopped");
+  Serial.println("  • Laser OFF");
+  Serial.println("  • Display blanked");
+
   devicePoweredOn = false;
 
-  digitalWrite(LASER_PIN, LOW);    // laser off
+  // Stop sensor
   sensor.stopRanging();
+
+  // Laser off
+  digitalWrite(LASER_PIN, LOW);
+  Serial.println("  ✓ Laser: OFF (GPIO15 = LOW)");
 
   goToSleepScreen();
 }
 
 // ==================== MEASUREMENT ====================
 void runMeasurementCycle() {
+  // Check if a measurement is ready
   if (sensor.dataReady()) {
     int16_t distanceMM = sensor.distance();
-    sensor.clearInterrupt();       // triggers next measurement
+    sensor.clearInterrupt();
 
-    if (distanceMM < 0) {
-      Serial.println("No valid target");
+    if (distanceMM < 0 || distanceMM > 4000) {
+      // Out of range
+      Serial.println("  [Sensor] Out of range / invalid reading");
       showOutOfRange();
     } else {
-      Serial.print("Distance: ");
-      Serial.print(distanceMM);
-      Serial.println(" mm");
+      // Valid measurement
       showDistance(distanceMM);
     }
   }
+
+  // Small delay to prevent hammer-reading
+  delay(10);
 }
 
 // ==================== DISPLAY ====================
@@ -182,17 +245,18 @@ void showDistance(int16_t distanceMM) {
   display.clearDisplay();
   display.setTextColor(SSD1306_WHITE);
 
-  // ---- Meters: large text ----
+  // ---- Meters: large text (size 3) ----
   display.setTextSize(3);
   char meterStr[8];
   snprintf(meterStr, sizeof(meterStr), "%.2fm", meters);
+  
   int16_t x1, y1;
   uint16_t w, h;
   display.getTextBounds(meterStr, 0, 0, &x1, &y1, &w, &h);
   display.setCursor((SCREEN_WIDTH - w) / 2, 8);
   display.print(meterStr);
 
-  // ---- Centimeters: smaller text, below ----
+  // ---- Centimeters: smaller text (size 2), below ----
   display.setTextSize(2);
   char cmStr[10];
   snprintf(cmStr, sizeof(cmStr), "%.1fcm", centimeters);
@@ -211,7 +275,7 @@ void showOutOfRange() {
   display.println("-- . -- m");
   display.setTextSize(1);
   display.setCursor(10, 45);
-  display.println("Out of range / no target");
+  display.println("Out of range");
   display.display();
 }
 
@@ -232,3 +296,90 @@ void goToSleepScreen() {
   display.clearDisplay();
   display.display();
 }
+
+// ==================== DEBUG: Print ESP32-C3 Board Info ====================
+void printBoardInfo() {
+  Serial.println("\n╔════════════════════════════════════════════════════════╗");
+  Serial.println("║            ESP32-C3 Super Mini Board Info             ║");
+  Serial.println("╠════════════════════════════════════════════════════════╣");
+  Serial.print("║ Chip Model: ESP32-C3");
+  Serial.println("                               ║");
+  Serial.print("║ CPU Cores: 1 (single-core, 160MHz)");
+  Serial.println("                    ║");
+  Serial.print("║ Flash Memory: ");
+  Serial.print(ESP.getFlashChipSize() / 1024 / 1024);
+  Serial.println("MB");
+  Serial.println("║ SDA Pin: GPIO21");
+  Serial.println("║ SCL Pin: GPIO20");
+  Serial.println("║ I2C Speed: 400kHz");
+  Serial.println("║ Laser Control: GPIO15 (PWM capable)");
+  Serial.println("║ Button Input: GPIO4 (with pull-up)");
+  Serial.println("╚════════════════════════════════════════════════════════╝\n");
+}
+
+/*
+ * ==================== BOARD MIGRATION NOTES ====================
+ * 
+ * Differences between Arduino Nano ESP32 and ESP32-C3 Super Mini:
+ * 
+ * 1. I2C PINS (CRITICAL!):
+ *    • Nano ESP32: GPIO21 (SDA), GPIO22 (SCL)
+ *    • ESP32-C3: GPIO21 (SDA), GPIO20 (SCL) ← DIFFERENT!
+ *    Updated in code: Wire.begin(21, 20)
+ * 
+ * 2. Size & Form Factor:
+ *    • Nano ESP32: 45mm × 18mm (similar to Arduino Nano)
+ *    • ESP32-C3: 22mm × 51mm (much more compact)
+ *    → Easier to fit in handheld enclosure
+ * 
+ * 3. Connectivity:
+ *    • Nano ESP32: Micro USB
+ *    • ESP32-C3: USB-C → Better for durability
+ * 
+ * 4. Processing:
+ *    • Nano ESP32: Dual-core (240MHz)
+ *    • ESP32-C3: Single-core (160MHz) → Still plenty for this project
+ * 
+ * 5. GPIO Availability:
+ *    • Nano ESP32: More GPIO pins
+ *    • ESP32-C3: Fewer GPIO but sufficient for this project (GPIO4, 15, 20, 21)
+ * 
+ * 6. Power Consumption:
+ *    • ESP32-C3: Generally lower than Nano ESP32
+ *    → May get slightly better battery life
+ * 
+ * ==================== INSTALLATION INSTRUCTIONS ====================
+ * 
+ * 1. Arduino IDE Board Support:
+ *    Tools → Board Manager → Search "esp32"
+ *    Install "esp32" by Espressif Systems (if not already done)
+ *    Select Tools → Board → "ESP32-C3 Dev Module" or similar
+ * 
+ * 2. Libraries (same as before):
+ *    • Adafruit_VL53L1X
+ *    • Adafruit_SSD1306
+ *    • Adafruit_GFX
+ *    • Wire (built-in)
+ * 
+ * 3. Upload:
+ *    • Select correct COM port
+ *    • Select Board: ESP32-C3 (check your variant)
+ *    • Click Upload
+ * 
+ * ==================== IF I2C DOESN'T WORK ====================
+ * 
+ * The ESP32-C3 Super Mini has TWO possible I2C pin configurations:
+ * 
+ * Default (used here):
+ *   SDA = GPIO21, SCL = GPIO20
+ * 
+ * Alternative:
+ *   SDA = GPIO1, SCL = GPIO2
+ * 
+ * If sensors not detected:
+ * 1. Check physical connections with multimeter
+ * 2. Run I2C scanner to find available devices
+ * 3. Try the alternative pins if first config fails
+ * 4. Ensure pull-up resistors (10kΩ) if sensors lack them
+ * 
+ */
