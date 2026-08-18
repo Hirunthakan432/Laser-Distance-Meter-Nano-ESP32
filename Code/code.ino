@@ -1,19 +1,19 @@
 /*
  * Handheld Laser Distance Meter
- * ESP32-C3 Super Mini + VL53L1X + SSD1306 OLED + KY-008 Laser
+ * ESP32-WROOM-32 + VL53L1X + SSD1306 OLED + KY-008 Laser
  *
- * UPDATED FOR ESP32-C3 SUPER MINI - Key Changes:
- *   • I2C pins: GPIO21 (SDA), GPIO20 (SCL) - NOT GPIO21/22!
- *   • More compact board than Nano ESP32
- *   • USB-C instead of micro USB
- *   • Still 3.3V logic, 5V input capable
+ * UPDATED FOR ESP32-WROOM-32 MODULE - Key Changes:
+ *   • I2C pins: GPIO21 (SDA), GPIO22 (SCL) - standard ESP32 defaults
+ *   • Dual-core Xtensa LX6 @ 240 MHz
+ *   • Classic WROOM-32 form factor (larger than C3 Super Mini)
+ *   • 3.3V logic, 5V input capable (VIN)
  *
  * Wiring:
- *   VL53L1X   VCC->3.3V  GND->GND  SDA->GPIO21  SCL->GPIO20
- *   OLED      VCC->3.3V  GND->GND  SDA->GPIO21  SCL->GPIO20
+ *   VL53L1X   VCC->3.3V  GND->GND  SDA->GPIO21  SCL->GPIO22
+ *   OLED      VCC->3.3V  GND->GND  SDA->GPIO21  SCL->GPIO22
  *   Button    one leg->GPIO4  other leg->GND
  *   KY-008    VCC->5V    GND->GND  Signal->GPIO15
- *   Power     Battery -> TP4056 -> ESP32-C3 5V
+ *   Power     Battery -> TP4056 -> ESP32 VIN (5V)
  *
  * Behavior:
  *   - HOLD button: device powers on (laser + display + sensor active)
@@ -28,9 +28,9 @@
 #include <Adafruit_SSD1306.h>
 #include <Adafruit_GFX.h>
 
-// ==================== PIN DEFINITIONS (ESP32-C3) ====================
-#define SDA_PIN      21  // GPIO21 (SDA) on ESP32-C3 Super Mini
-#define SCL_PIN      20  // GPIO20 (SCL) on ESP32-C3 Super Mini - DIFFERENT FROM NANO ESP32!
+// ==================== PIN DEFINITIONS (ESP32-WROOM-32) ====================
+#define SDA_PIN      21  // GPIO21 (SDA) - standard ESP32 default
+#define SCL_PIN      22  // GPIO22 (SCL) - standard ESP32 default
 #define BUTTON_PIN   4   // GPIO4 for button input
 #define LASER_PIN    15  // GPIO15 for laser control
 
@@ -63,7 +63,7 @@ void setup() {
   Serial.begin(115200);
   delay(500);
   Serial.println("\n\n╔════════════════════════════════════════════════════════╗");
-  Serial.println("║  Handheld Laser Distance Meter - ESP32-C3 Super Mini  ║");
+  Serial.println("║  Handheld Laser Distance Meter - ESP32-WROOM-32       ║");
   Serial.println("╚════════════════════════════════════════════════════════╝\n");
 
   // Pins
@@ -73,8 +73,8 @@ void setup() {
 
   Serial.println("✓ GPIO pins initialized");
 
-  // I2C with CORRECTED PINS for ESP32-C3
-  Wire.begin(SDA_PIN, SCL_PIN);  // SDA=GPIO21, SCL=GPIO20
+  // I2C with standard ESP32-WROOM-32 pins
+  Wire.begin(SDA_PIN, SCL_PIN);  // SDA=GPIO21, SCL=GPIO22
   Wire.setClock(400000);
   delay(100);
   Serial.print("✓ I2C bus initialized (SDA=GPIO");
@@ -297,20 +297,20 @@ void goToSleepScreen() {
   display.display();
 }
 
-// ==================== DEBUG: Print ESP32-C3 Board Info ====================
+// ==================== DEBUG: Print ESP32-WROOM-32 Board Info ====================
 void printBoardInfo() {
   Serial.println("\n╔════════════════════════════════════════════════════════╗");
-  Serial.println("║            ESP32-C3 Super Mini Board Info             ║");
+  Serial.println("║            ESP32-WROOM-32 Module Info                 ║");
   Serial.println("╠════════════════════════════════════════════════════════╣");
-  Serial.print("║ Chip Model: ESP32-C3");
-  Serial.println("                               ║");
-  Serial.print("║ CPU Cores: 1 (single-core, 160MHz)");
-  Serial.println("                    ║");
+  Serial.print("║ Chip Model: ESP32 (WROOM-32)");
+  Serial.println("                          ║");
+  Serial.print("║ CPU Cores: 2 (dual-core, 240MHz)");
+  Serial.println("                       ║");
   Serial.print("║ Flash Memory: ");
   Serial.print(ESP.getFlashChipSize() / 1024 / 1024);
   Serial.println("MB");
   Serial.println("║ SDA Pin: GPIO21");
-  Serial.println("║ SCL Pin: GPIO20");
+  Serial.println("║ SCL Pin: GPIO22");
   Serial.println("║ I2C Speed: 400kHz");
   Serial.println("║ Laser Control: GPIO15 (PWM capable)");
   Serial.println("║ Button Input: GPIO4 (with pull-up)");
@@ -320,42 +320,39 @@ void printBoardInfo() {
 /*
  * ==================== BOARD MIGRATION NOTES ====================
  * 
- * Differences between Arduino Nano ESP32 and ESP32-C3 Super Mini:
+ * Changes for ESP32-WROOM-32:
  * 
  * 1. I2C PINS (CRITICAL!):
- *    • Nano ESP32: GPIO21 (SDA), GPIO22 (SCL)
- *    • ESP32-C3: GPIO21 (SDA), GPIO20 (SCL) ← DIFFERENT!
- *    Updated in code: Wire.begin(21, 20)
+ *    • ESP32-C3 Super Mini: GPIO21 (SDA), GPIO20 (SCL)
+ *    • ESP32-WROOM-32:     GPIO21 (SDA), GPIO22 (SCL) ← UPDATED
+ *    Updated in code: Wire.begin(21, 22)
  * 
- * 2. Size & Form Factor:
- *    • Nano ESP32: 45mm × 18mm (similar to Arduino Nano)
- *    • ESP32-C3: 22mm × 51mm (much more compact)
- *    → Easier to fit in handheld enclosure
+ * 2. Processing:
+ *    • ESP32-WROOM-32: Dual-core Xtensa LX6 @ 240 MHz
+ *    • More performance headroom than ESP32-C3
  * 
- * 3. Connectivity:
- *    • Nano ESP32: Micro USB
- *    • ESP32-C3: USB-C → Better for durability
+ * 3. Form Factor:
+ *    • Classic WROOM-32 module (or DevKit boards based on it)
+ *    • Larger than C3 Super Mini but very common and well-supported
  * 
- * 4. Processing:
- *    • Nano ESP32: Dual-core (240MHz)
- *    • ESP32-C3: Single-core (160MHz) → Still plenty for this project
+ * 4. Board Selection in Arduino IDE:
+ *    Tools → Board → ESP32 Arduino → "ESP32 Dev Module"
+ *    (or "ESP32-WROOM-32" if available in your package)
  * 
- * 5. GPIO Availability:
- *    • Nano ESP32: More GPIO pins
- *    • ESP32-C3: Fewer GPIO but sufficient for this project (GPIO4, 15, 20, 21)
- * 
- * 6. Power Consumption:
- *    • ESP32-C3: Generally lower than Nano ESP32
- *    → May get slightly better battery life
+ * 5. GPIO:
+ *    GPIO4 and GPIO15 are safe and commonly used on WROOM-32 boards.
+ *    Avoid strapping pins if possible (GPIO0, 2, 12, 15 can affect boot).
+ *    GPIO15 is used here for laser; it is a strapping pin but works fine
+ *    for output after boot.
  * 
  * ==================== INSTALLATION INSTRUCTIONS ====================
  * 
  * 1. Arduino IDE Board Support:
  *    Tools → Board Manager → Search "esp32"
- *    Install "esp32" by Espressif Systems (if not already done)
- *    Select Tools → Board → "ESP32-C3 Dev Module" or similar
+ *    Install "esp32" by Espressif Systems
+ *    Select Tools → Board → "ESP32 Dev Module"
  * 
- * 2. Libraries (same as before):
+ * 2. Libraries:
  *    • Adafruit_VL53L1X
  *    • Adafruit_SSD1306
  *    • Adafruit_GFX
@@ -363,23 +360,19 @@ void printBoardInfo() {
  * 
  * 3. Upload:
  *    • Select correct COM port
- *    • Select Board: ESP32-C3 (check your variant)
+ *    • Board: ESP32 Dev Module
  *    • Click Upload
  * 
  * ==================== IF I2C DOESN'T WORK ====================
  * 
- * The ESP32-C3 Super Mini has TWO possible I2C pin configurations:
- * 
- * Default (used here):
- *   SDA = GPIO21, SCL = GPIO20
- * 
- * Alternative:
- *   SDA = GPIO1, SCL = GPIO2
+ * Standard ESP32-WROOM-32 I2C:
+ *   SDA = GPIO21, SCL = GPIO22
  * 
  * If sensors not detected:
  * 1. Check physical connections with multimeter
  * 2. Run I2C scanner to find available devices
- * 3. Try the alternative pins if first config fails
- * 4. Ensure pull-up resistors (10kΩ) if sensors lack them
+ * 3. Ensure 3.3V power to sensors (not 5V)
+ * 4. Add 4.7k–10k pull-up resistors on SDA/SCL if missing
+ * 5. Keep I2C wires short
  * 
  */
